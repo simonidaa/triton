@@ -38,27 +38,6 @@ namespace triton {
 // Bitwidth of pointers
 constexpr int kPtrBitWidth = 64;
 
-static std::pair<SmallVector<unsigned>, SmallVector<unsigned>>
-getCvtOrder(Attribute srcLayout, Attribute dstLayout) {
-  auto srcMmaLayout = mlir::dyn_cast<NvidiaMmaEncodingAttr>(srcLayout);
-  auto srcDotLayout = mlir::dyn_cast<DotOperandEncodingAttr>(srcLayout);
-  auto dstMmaLayout = mlir::dyn_cast<NvidiaMmaEncodingAttr>(dstLayout);
-  auto dstDotLayout = mlir::dyn_cast<DotOperandEncodingAttr>(dstLayout);
-
-  assert(!(srcMmaLayout && dstMmaLayout && !srcMmaLayout.isAmpere() &&
-           !srcMmaLayout.isHopper()) &&
-         "mma -> mma layout conversion is only supported on Ampere");
-
-  // mma or dot layout does not have an order, so the order depends on the
-  // layout of the other operand.
-  auto inOrd = (srcMmaLayout || srcDotLayout) ? getOrder(dstLayout)
-                                              : getOrder(srcLayout);
-  auto outOrd = (dstMmaLayout || dstDotLayout) ? getOrder(srcLayout)
-                                               : getOrder(dstLayout);
-
-  return {inOrd, outOrd};
-}
-
 static SmallVector<unsigned> getRepShapeForCvt(RankedTensorType srcTy,
                                                RankedTensorType dstTy) {
   Attribute srcLayout = srcTy.getEncoding();

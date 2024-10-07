@@ -58,19 +58,23 @@ void decomposeTensorCoreToDotLayoutConversion(ModuleOp module,
     auto dstDotOp =
         dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
     if (srcMma && dstDotOp && !shortcutFn(srcType, dstType)) {
-      auto tmpType = RankedTensorType::get(
-          dstType.getShape(), dstType.getElementType(),
-          triton::gpu::BlockedEncodingAttr::get(
-              module.getContext(), srcType.getShape(), getSizePerThread(srcMma),
-              getOrder(srcMma), numWarps, threadsPerWarp, numCTAs));
-      auto tmp = builder.create<triton::gpu::ConvertLayoutOp>(
-          cvtOp.getLoc(), tmpType, cvtOp.getSrc());
-      addAttrs(tmp, cvtOp->getAttrs());
-      auto newConvert = builder.create<triton::gpu::ConvertLayoutOp>(
-          cvtOp.getLoc(), dstType, tmp);
-      addAttrs(newConvert, cvtOp->getAttrs());
-      cvtOp.replaceAllUsesWith(newConvert.getResult());
-      cvtOp.erase();
+      auto nvidiaMma = dyn_cast<NvidiaMmaEncodingAttr>(srcMma);
+      if (!nvidiaMma || !nvidiaMma.isAmpere()) {
+        auto tmpType = RankedTensorType::get(
+            dstType.getShape(), dstType.getElementType(),
+            triton::gpu::BlockedEncodingAttr::get(
+                module.getContext(), srcType.getShape(),
+                getSizePerThread(srcMma), getOrder(srcMma), numWarps,
+                threadsPerWarp, numCTAs));
+        auto tmp = builder.create<triton::gpu::ConvertLayoutOp>(
+            cvtOp.getLoc(), tmpType, cvtOp.getSrc());
+        addAttrs(tmp, cvtOp->getAttrs());
+        auto newConvert = builder.create<triton::gpu::ConvertLayoutOp>(
+            cvtOp.getLoc(), dstType, tmp);
+        addAttrs(newConvert, cvtOp->getAttrs());
+        cvtOp.replaceAllUsesWith(newConvert.getResult());
+        cvtOp.erase();
+      }
     }
   });
 }
@@ -90,6 +94,10 @@ void decomposeBlockedToDotLayoutConversion(ModuleOp module) {
     auto dstDotOp =
         dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
     if (srcBlocked && dstDotOp) {
+      auto dotParent = dyn_cast<NvidiaMmaEncodingAttr>(dstDotOp.getParent());
+      if (dotParent && dotParent.isAmpere()) {
+        return;
+      }
       Attribute sharedMemorySpace =
           triton::gpu::SharedMemorySpaceAttr::get(srcType.getContext());
       auto tmpType = MemDescType::get(

@@ -959,10 +959,11 @@ unsigned SharedEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
 SmallVector<unsigned>
 DotOperandEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
                                           Type eltTy) const {
+  auto rank = shape.size();
+  assert(rank == 2 || rank == 3);
 
-  if (auto parent = mlir::dyn_cast<AMDMfmaEncodingAttr>(getParent())) {
-    auto rank = shape.size();
-    assert(rank == 2 || rank == 3);
+  auto idx = getOpIdx();
+  assert(idx == 0 || idx == 1);
 
     auto idx = getOpIdx();
     assert(idx == 0 || idx == 1);
@@ -978,8 +979,27 @@ DotOperandEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape,
     elemsPerThread[rank - 1] = (idx == 0) ? rep[2] * kWidth : rep[2];
 
     return elemsPerThread;
+  } else if (auto mma = mlir::dyn_cast<NvidiaMmaEncodingAttr>(parent)) {
+    if (mma.isAmpere()) {
+      auto bitwidth = getPointeeType(eltTy).getIntOrFloatBitWidth();
+      auto rep = mma.getMMAv2RepForOperand(shape, bitwidth, idx);
+      if (rank == 3)
+        elemsPerThread[0] = rep[0];
+      auto origKWidth = std::max<unsigned>(32 / bitwidth, 1);
+      auto fold = std::max<unsigned>(kWidth / origKWidth, 1);
+      auto kDim = (idx == 0) ? 2 : 1;
+      rep[kDim] = std::max<unsigned>(1, rep[kDim] / fold);
+      elemsPerThread[rank - 2] = (idx == 0) ? rep[1] * 2 : rep[1] * kWidth * 2;
+      elemsPerThread[rank - 1] = (idx == 0) ? rep[2] * kWidth * 2 : rep[2];
+      llvm::errs() << "elemsPerThread[rank - 2] = " << elemsPerThread[rank - 2]
+                   << "\n";
+      llvm::errs() << "elemsPerThread[rank - 1] = " << elemsPerThread[rank - 1]
+                   << "\n";
+      llvm::errs() << "rep[1] = " << rep[1] << "\n";
+      llvm::errs() << "rep[2] = " << rep[2] << "\n";
+      return elemsPerThread;
+    }
   }
-
   llvm_unreachable("getElemsPerThread is not supported for dot operand");
   return SmallVector<unsigned>();
 }
@@ -2027,13 +2047,15 @@ SmallVector<int64_t> NvidiaMmaEncodingAttr::getMMAv2RepForOperand(
 
   if (opIdx == 0)
     return {numRepBatch,
+            /*repM=*/
             std::max<int64_t>(1, shape[rank - 2] /
                                      (shapePerWarp[1] * warpsPerCTA[rank - 2])),
-            std::max<int64_t>(1, shape[rank - 1] / shapePerWarp[3])};
+            /*repK=*/std::max<int64_t>(1, shape[rank - 1] / shapePerWarp[3])};
   else {
     assert(opIdx == 1);
     return {numRepBatch,
-            std::max<int64_t>(1, shape[rank - 2] / shapePerWarp[3]),
+            /*repK=*/std::max<int64_t>(1, shape[rank - 2] / shapePerWarp[3]),
+            /*repN=*/
             std::max<int64_t>(1, shape[rank - 1] / (shapePerWarp[2] *
                                                     warpsPerCTA[rank - 1]))};
   }

@@ -386,8 +386,8 @@ struct ConvertLayoutOpUsingLinearLayoutsConversion
       if (auto dotOperand = dyn_cast<DotOperandEncodingAttr>(layout)) {
         if (auto nvidiaMma =
                 dyn_cast<NvidiaMmaEncodingAttr>(dotOperand.getParent())) {
-          if (product(getCTAsPerCGA(nvidiaMma)) > 1) {
-            return false;
+          if (nvidiaMma.isAmpere()) {
+            return true;
           }
           if (useLegacyMMAConversion) {
             return false;

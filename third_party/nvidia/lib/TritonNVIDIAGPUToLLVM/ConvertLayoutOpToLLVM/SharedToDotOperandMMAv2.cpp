@@ -507,8 +507,11 @@ Type getSharedMemTy(Type argType) {
 Value composeValuesToDotOperandLayoutStruct(
     const ValueTable &vals, int batch, int n0, int n1,
     const LLVMTypeConverter *typeConverter, Location loc,
-    ConversionPatternRewriter &rewriter) {
+    ConversionPatternRewriter &rewriter, Type eltTy) {
   std::vector<Value> elems;
+  assert(32 >= eltTy.getIntOrFloatBitWidth() && "only support 32-bit or less");
+  auto vectorType = vec_ty(eltTy, 32 / eltTy.getIntOrFloatBitWidth());
+
   for (int b = 0; b < batch; ++b)
     for (int m = 0; m < n0; ++m)
       for (int k = 0; k < n1; ++k) {
@@ -651,8 +654,10 @@ Value loadArg(ConversionPatternRewriter &rewriter, Location loc,
         loadFn(b, 2 * m, 2 * k);
 
   // Format the values to LLVM::Struct to passing to mma codegen.
-  return composeValuesToDotOperandLayoutStruct(
-      vals, numRepBatch, numRepOuter, numRepK, typeConverter, loc, rewriter);
+  Type eltTy = descTy.getElementType();
+  return composeValuesToDotOperandLayoutStruct(vals, numRepBatch, numRepOuter,
+                                               numRepK, typeConverter, loc,
+                                               rewriter, eltTy);
 }
 
 template <typename T>

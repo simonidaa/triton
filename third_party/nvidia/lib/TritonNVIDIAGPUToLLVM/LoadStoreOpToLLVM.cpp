@@ -38,6 +38,16 @@ Value redundantDataMask(Type valueTy, ConversionPatternRewriter &rewriter,
     auto sizePerThread = triton::gpu::getSizePerThread(layout);
     auto threadsPerWarp = triton::gpu::getThreadsPerWarp(layout);
     auto warpsPerCTA = triton::gpu::getWarpsPerCTA(layout);
+    if (auto dotOpLayout = dyn_cast<DotOperandEncodingAttr>(layout)) {
+      auto parent = dyn_cast<NvidiaMmaEncodingAttr>(dotOpLayout.getParent());
+      if (parent.isAmpere()) {
+        if (dotOpLayout.getOpIdx() == 1) {
+          warpsPerCTA[rank - 2] = 1;
+        } else {
+          warpsPerCTA[rank - 1] = 1;
+        }
+      }
+    }
     auto order = triton::gpu::getOrder(layout);
     auto warpOrder = triton::gpu::getWarpOrder(layout);
     auto shapePerCTATile = triton::gpu::getShapePerCTATile(layout, shape);

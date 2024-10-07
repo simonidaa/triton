@@ -551,8 +551,8 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
 }
 
 std::optional<LinearLayout>
-dotOperandMfmaToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
-                             ArrayRef<int64_t> shape) {
+mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
+                      ArrayRef<int64_t> shape) {
 
   // Current linear layout conversion for dot operand is only necessary to
   // enable LDS bypass for operand B in the MFMA dot path. To achieve

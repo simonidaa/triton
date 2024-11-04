@@ -51,8 +51,11 @@ using namespace mlir::triton::gpu;
 struct LocalLoadOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
 public:
-  using ConvertOpToLLVMPattern<
-      triton::gpu::LocalLoadOp>::ConvertOpToLLVMPattern;
+  LocalLoadOpConversion(const LLVMTypeConverter &typeConverter,
+    const NVIDIA::TargetInfo &targetInfo,
+    PatternBenefit benefit = 1)
+    : ConvertOpToLLVMPattern(typeConverter, benefit), targetInfo(targetInfo) {
+    }
 
   LogicalResult
   matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
@@ -70,6 +73,7 @@ public:
   }
 
 private:
+  const NVIDIA::TargetInfo &targetInfo;
   // shared -> dot_operand if the result layout is mma
   Value lowerSharedToDotOperandMMA(
       triton::gpu::LocalLoadOp op, triton::gpu::LocalLoadOpAdaptor adaptor,
@@ -101,6 +105,15 @@ private:
       res = SharedToDotOperandMMAv2OrV3::convertLayout(
           dotOperandLayout.getOpIdx(), rewriter, loc, src, dotOperandLayout,
           smemObj, typeConverter, getThreadId(rewriter, loc));
+
+      auto elems = unpackLLElements(loc, res, rewriter);
+      auto elemTy = src.getType().getElementType();
+      auto tid = getThreadId(rewriter, loc);
+      targetInfo.printf(
+          rewriter,
+          "opIdx: " + std::to_string(dotOperandLayout.getOpIdx()) +
+              ", tid: %d, elems: %f, %f, %f, %f\n",
+          {tid, elems[0], elems[1], elems[2], elems[3]});
     } else if (mmaLayout.isVolta() && isMMA) { // tensor core v1
       bool isMMAv1Row = mmaLayout.getMMAv1IsRow(dotOperandLayout.getOpIdx());
       auto srcSharedLayout =
@@ -769,7 +782,7 @@ void mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
   // testcases.  Is this dead code?  Does the benefit need to be increased?
   patterns.add<ConvertLayoutOpConversion>(typeConverter, targetInfo, benefit);
   // Same default benefit
-  patterns.add<LocalLoadOpConversion>(typeConverter, benefit);
+  patterns.add<LocalLoadOpConversion>(typeConverter, targetInfo, benefit);
   mlir::triton::populateConvertLayoutOpToLLVMPatterns(typeConverter, targetInfo,
                                                       patterns, benefit);
 }

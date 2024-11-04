@@ -4,6 +4,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "llvm/ADT/SmallVector.h"
+#include "../TargetInfo.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -60,13 +61,15 @@ Value loadC(Value tensor, Value llTensor,
 ValueTableV2 getValuesFromDotOperandLayoutStruct(
     const LLVMTypeConverter *typeConverter, Location loc,
     ConversionPatternRewriter &rewriter, Value value, int batch, int repOuter,
-    int repK, RankedTensorType type) {
+    int repK, RankedTensorType type, const NVIDIA::TargetInfo &targetInfo) {
   auto elems = unpackLLElements(loc, value, rewriter);
   auto eltTy = type.getElementType();
   int offset{};
   ValueTableV2 vals;
   auto numElemsPerVec = 32 / eltTy.getIntOrFloatBitWidth();
   auto vecTy = vec_ty(eltTy, numElemsPerVec);
+  auto tid = getThreadId(rewriter, loc);
+  auto dot = cast<DotOperandEncodingAttr>(type.getEncoding());
 
   auto packVec = [&](std::array<int, 3> dstIdx) {
     Value vec = undef(vecTy);
@@ -79,7 +82,6 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
 
   // FIXME [Dot LL]
   // [ez] Generalize the logic below for kWidth * elemBitWidth > 32
-  auto dot = cast<DotOperandEncodingAttr>(type.getEncoding());
   auto largeK = dot.getKWidth() == 8 &&
                 cast<NvidiaMmaEncodingAttr>(dot.getParent()).isAmpere();
   if (largeK) {
@@ -134,16 +136,28 @@ ValueTableV2 getValuesFromDotOperandLayoutStruct(
       for (auto m = 0; m < repOuter; ++m)
         for (auto k = 0; k < repK; ++k) {
           packVec({b, 2 * m, 2 * k});
+          //Value v0 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, vals[{b, 2 * m, 2 * k}]);
+          //targetInfo.printf(rewriter, "opIdx=0 load tid: %d, n: %d, k: %d, value: %f\n", { tid, i32_val(2 * m), i32_val(2 * k), v0});
           packVec({b, 2 * m + 1, 2 * k});
+          //Value v1 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, vals[{b, 2 * m + 1, 2 * k}]);
+          //targetInfo.printf(rewriter, "opIdx=0 load tid: %d, n: %d, k: %d, value: %f\n", { tid, i32_val(2 * m + 1), i32_val(2 * k), v1});
           packVec({b, 2 * m, 2 * k + 1});
+          //Value v2 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, vals[{b, 2 * m, 2 * k + 1}]);
+          //targetInfo.printf(rewriter, "opIdx=0 load tid: %d, n: %d, k: %d, value: %f\n", { tid, i32_val(2 * m), i32_val(2 * k + 1), v2});
           packVec({b, 2 * m + 1, 2 * k + 1});
+          //Value v3 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, vals[{b, 2 * m + 1, 2 * k + 1}]);
+          //targetInfo.printf(rewriter, "opIdx=0 load tid: %d, n: %d, k: %d, value: %f\n", { tid, i32_val(2 * m + 1), i32_val(2 * k + 1), v3});
         }
   } else {
     for (auto b = 0; b < batch; ++b)
       for (auto n = 0; n < repOuter; ++n)
         for (auto k = 0; k < repK; ++k) {
           packVec({b, n, 2 * k});
+          Value v0 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, vals[{b, n, 2 * k}]);
+          targetInfo.printf(rewriter, "opIdx=1 load tid: %d, n: %d, k: %d, value: %f\n", { tid, i32_val(n), i32_val(2 * k), v0});
           packVec({b, n, 2 * k + 1});
+          Value v1 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, vals[{b, n, 2 * k + 1}]);
+          targetInfo.printf(rewriter, "opIdx=1 load tid: %d, n: %d, k: %d, value: %f\n", { tid, i32_val(n), i32_val(2 * k + 1), v1});
         }
   }
   return vals;
@@ -380,7 +394,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
                          ConversionPatternRewriter &rewriter, Location loc,
                          Value a, Value b, Value c, Value d, Value loadedA,
                          Value loadedB, Value loadedC, DotOp op,
-                         DotOpAdaptor adaptor, bool isTuring) {
+                         DotOpAdaptor adaptor, bool isTuring, const NVIDIA::TargetInfo &targetInfo) {
   MLIRContext *ctx = c.getContext();
   auto aTensorTy = cast<RankedTensorType>(a.getType());
   auto bTensorTy = cast<RankedTensorType>(b.getType());
@@ -404,14 +418,14 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   int repBatch = repA[0];
 
   auto ha = getValuesFromDotOperandLayoutStruct(
-      typeConverter, loc, rewriter, loadedA, repBatch, repM, repK, aTensorTy);
+      typeConverter, loc, rewriter, loadedA, repBatch, repM, repK, aTensorTy, targetInfo);
 
   // FIXME [Dot LL]
   // max(repN / 2, 1) is wrong for repN = 1!
   // This is also wrong in
   // NvidiaMmaEncodingAttr::getTotalElemsPerThreadForOperand
   auto hb = getValuesFromDotOperandLayoutStruct(
-      typeConverter, loc, rewriter, loadedB, repBatch, repN, repK, bTensorTy);
+      typeConverter, loc, rewriter, loadedB, repBatch, repN, repK, bTensorTy, targetInfo);
   auto fc = unpackLLElements(loc, loadedC, rewriter);
   auto numMmaRets = dTensorTy.getElementType().getIntOrFloatBitWidth() / 8;
   int numCPackedElem = 4 / numMmaRets;
@@ -424,7 +438,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto elemsPerThread = triton::gpu::getElemsPerThread(dTensorTy);
   auto batchOffset =
       elemsPerThread[rank - 2] * elemsPerThread[rank - 1] / numCPackedElem;
-  auto callMma = [&](unsigned b, unsigned m, unsigned n, unsigned k) {
+  auto callMma = [&](int b, int m, int n, int k) {
     unsigned colsPerThread = repN > 1 ? repN * 2 : repN;
     PTXBuilder builder;
     auto &mma = *builder.create(mmaInstructions.at(mmaType));
@@ -444,6 +458,18 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
       callMmaAmpere(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
                     numCPackedElem, batchOffset, ha, hb, fc, isAccF16,
                     isIntMMA);
+      //Value v0 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, ha[{b, 2 * m, 2 * k}]);
+      //Value v1 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, ha[{b, 2 * m + 1, 2 * k}]);
+      //Value v2 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, ha[{b, 2 * m, 2 * k + 1}]);
+      //Value v3 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, ha[{b, 2 * m + 1, 2 * k + 1}]);
+      //Value v4 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, hb[{b, n, k}]);
+      //Value v5 = rewriter.create<LLVM::BitcastOp>(loc, f32_ty, hb[{b, n, k + 1}]);
+      //targetInfo.printf(rewriter, "mma m: %d, n: %d, k: %d, a: %f, %f, %f, %f, b: %f, %f\n", {
+      //  i32_val(m),
+      //  i32_val(n),
+      //  i32_val(k),
+      //  v0, v1, v2, v3, v4, v5
+      //  });
     }
 
     Value mmaOut =
@@ -474,6 +500,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
           numCPackedElem > 1
               ? bitcast(extract_element(fc[i], i32_val(j)), resElemTy)
               : bitcast(fc[i], resElemTy);
+      targetInfo.printf( rewriter, "result: %f\n", {results[i * numCPackedElem + j]});
     }
   }
   Value res = packLLElements(loc, typeConverter, results, rewriter, structTy);
@@ -485,7 +512,7 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
 
 LogicalResult convertMMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                          const LLVMTypeConverter *typeConverter,
-                         ConversionPatternRewriter &rewriter, bool isTuring) {
+                         ConversionPatternRewriter &rewriter, bool isTuring, const NVIDIA::TargetInfo &targetInfo) {
   assert(mlir::isa<DotOperandEncodingAttr>(op.getA().getType().getEncoding()) &&
          mlir::isa<DotOperandEncodingAttr>(op.getB().getType().getEncoding()) &&
          "Both $a and %b should be DotOperand layout.");
@@ -494,19 +521,19 @@ LogicalResult convertMMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
       loadC(op.getC(), adaptor.getC(), typeConverter, op.getLoc(), rewriter);
   return convertDot(typeConverter, rewriter, op.getLoc(), op.getA(), op.getB(),
                     op.getC(), op.getD(), adaptor.getA(), adaptor.getB(),
-                    loadedC, op, adaptor, isTuring);
+                    loadedC, op, adaptor, isTuring, targetInfo);
 }
 
 // Convert to mma.m16n8k8
 LogicalResult convertMMA1688(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                              const LLVMTypeConverter *typeConverter,
-                             ConversionPatternRewriter &rewriter) {
-  return convertMMA(op, adaptor, typeConverter, rewriter, true /*isTuring*/);
+                             ConversionPatternRewriter &rewriter, const NVIDIA::TargetInfo &targetInfo) {
+  return convertMMA(op, adaptor, typeConverter, rewriter, true /*isTuring*/, targetInfo);
 }
 
 // Convert to mma.m16n8k16
 LogicalResult convertMMA16816(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                               const LLVMTypeConverter *typeConverter,
-                              ConversionPatternRewriter &rewriter) {
-  return convertMMA(op, adaptor, typeConverter, rewriter, false /*isTuring*/);
+                              ConversionPatternRewriter &rewriter, const NVIDIA::TargetInfo &targetInfo) {
+  return convertMMA(op, adaptor, typeConverter, rewriter, false /*isTuring*/, targetInfo);
 }

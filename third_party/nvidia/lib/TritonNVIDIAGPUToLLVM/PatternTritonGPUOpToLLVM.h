@@ -28,6 +28,7 @@ void populateConvertLayoutOpToLLVMOptimizedPatterns(
     RewritePatternSet &patterns, PatternBenefit benefit);
 
 void populateDotOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                 const TargetInfo &targetInfo,
                                  RewritePatternSet &patterns,
                                  PatternBenefit benefit);
 

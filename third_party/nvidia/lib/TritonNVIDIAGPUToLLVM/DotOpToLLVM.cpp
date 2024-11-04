@@ -17,11 +17,13 @@ LogicalResult convertMMA884(triton::DotOp op, triton::DotOp::Adaptor adaptor,
 
 LogicalResult convertMMA1688(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                              const LLVMTypeConverter *typeConverter,
-                             ConversionPatternRewriter &rewriter);
+                             ConversionPatternRewriter &rewriter,
+                             const NVIDIA::TargetInfo &targetInfo);
 
 LogicalResult convertMMA16816(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                               const LLVMTypeConverter *typeConverter,
-                              ConversionPatternRewriter &rewriter);
+                              ConversionPatternRewriter &rewriter,
+                              const NVIDIA::TargetInfo &targetInfo);
 
 LogicalResult convertWGMMA(triton::nvidia_gpu::WarpGroupDotOp op,
                            triton::nvidia_gpu::WarpGroupDotOp::Adaptor adaptor,
@@ -29,7 +31,15 @@ LogicalResult convertWGMMA(triton::nvidia_gpu::WarpGroupDotOp op,
                            ConversionPatternRewriter &rewriter, Value thread);
 namespace {
 struct DotOpConversion : public ConvertOpToLLVMPattern<triton::DotOp> {
-  using ConvertOpToLLVMPattern<triton::DotOp>::ConvertOpToLLVMPattern;
+    DotOpConversion(const LLVMTypeConverter &typeConverter,
+                  const NVIDIA::TargetInfo &targetInfo,
+                  PatternBenefit benefit = 1)
+      : ConvertOpToLLVMPattern(typeConverter, benefit), targetInfo(targetInfo) {}
+
+private:
+  const NVIDIA::TargetInfo &targetInfo;
+
+public:
 
   LogicalResult
   matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
@@ -51,9 +61,9 @@ struct DotOpConversion : public ConvertOpToLLVMPattern<triton::DotOp> {
       if (mmaLayout.isVolta())
         return convertMMA884(op, adaptor, getTypeConverter(), rewriter);
       if (mmaLayout.isTuring())
-        return convertMMA1688(op, adaptor, getTypeConverter(), rewriter);
+        return convertMMA1688(op, adaptor, getTypeConverter(), rewriter, targetInfo);
       if (mmaLayout.isAmpere())
-        return convertMMA16816(op, adaptor, getTypeConverter(), rewriter);
+        return convertMMA16816(op, adaptor, getTypeConverter(), rewriter, targetInfo);
 
       llvm::report_fatal_error(
           "Unsupported MMA kind found when converting DotOp to LLVM.");
@@ -169,9 +179,9 @@ struct WarpGroupDotWaitOpConversion
 } // namespace
 
 void mlir::triton::NVIDIA::populateDotOpToLLVMPatterns(
-    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    LLVMTypeConverter &typeConverter, const NVIDIA::TargetInfo &targetInfo, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<DotOpConversion>(typeConverter, benefit);
+  patterns.add<DotOpConversion>(typeConverter, targetInfo, benefit);
   patterns.add<WarpGroupDotOpConversion>(typeConverter, benefit);
   patterns.add<WarpGroupDotWaitOpConversion>(typeConverter, benefit);
 }

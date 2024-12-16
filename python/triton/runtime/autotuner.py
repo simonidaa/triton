@@ -5,6 +5,7 @@ import os
 import time
 import inspect
 from typing import Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .jit import KernelInterface
 from .errors import OutOfResources
@@ -120,6 +121,28 @@ class Autotuner(KernelInterface):
         else:
             self.do_bench = do_bench
 
+    def _compile(self, *args, config, **meta):
+        """Compile a configuration without running it."""
+        from ..compiler.errors import CompileTimeAssertionFailure
+        conflicts = meta.keys() & config.kwargs.keys()
+        if conflicts:
+            raise ValueError(f"Conflicting meta-parameters: {', '.join(conflicts)}."
+                             " Make sure that you don't re-define auto-tuned symbols.")
+        current = dict(meta, **config.all_kwargs())
+        full_nargs = {**self.nargs, **current}
+
+        try:
+            # Attempt to execute the kernel with all arguments
+            # Execution errors will indicate compilation issues
+            # Add or overwrite 'warmup' in the current dictionary to compile without running
+            current['warmup'] = True
+            self.fn.run(*args, **current)
+            return config, True  # Compilation successful
+        except Exception as e:
+            if isinstance(e, (OutOfResources, CompileTimeAssertionFailure)):
+                return config, False  # Compilation failed due to expected issues
+            raise  # Re-raise other unexpected exceptions
+
     def _bench(self, *args, config, **meta):
         from ..compiler.errors import CompileTimeAssertionFailure
 
@@ -138,15 +161,12 @@ class Autotuner(KernelInterface):
                 config.pre_hook(full_nargs)
             self.pre_hook(args)
             try:
-                self.fn.run(
-                    *args,
-                    **current,
-                )
+                self.fn.run(*args, **current)
             except Exception as e:
                 try:
                     self.post_hook(args, exception=e)
                 finally:
-                    # Throw exception raised by `self.fn.run`
+                    # Throw exception raised by self.fn.run
                     raise
 
             self.post_hook(args, exception=None)
@@ -168,23 +188,46 @@ class Autotuner(KernelInterface):
                     key.append(str(arg.dtype))
             key = tuple(key)
             if key not in self.cache:
-                # prune configs
                 used_cached_result = False
+
+                # Step 1: Parallel compilation
                 pruned_configs = self.prune_configs(kwargs)
+                compile_start = time.time()
+                compiled_configs = []
+                with ThreadPoolExecutor() as executor:
+                    futures = {
+                        executor.submit(self._compile, *args, config=config, **kwargs): config
+                        for config in pruned_configs
+                    }
+                    for future in as_completed(futures):
+                        config, success = future.result()
+                        if success:
+                            compiled_configs.append(config)
+                compile_end = time.time()
+
+                # Step 2: Linear benchmarking
                 bench_start = time.time()
-                timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
+                timings = {}
+                for config in compiled_configs:
+                    timings[config] = self._bench(*args, config=config, **kwargs)
                 bench_end = time.time()
+
+                self.compile_time = compile_end - compile_start
                 self.bench_time = bench_end - bench_start
+
+                # Cache the best configuration
                 self.cache[key] = builtins.min(timings, key=timings.get)
                 self.pre_hook(args, reset_only=True)
                 self.configs_timings = timings
             config = self.cache[key]
         else:
             config = self.configs[0]
+
         self.best_config = config
         if os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1" and not used_cached_result:
             print(f"Triton autotuning for function {self.base_fn.__name__} finished after "
-                  f"{self.bench_time:.2f}s; best config selected: {self.best_config};")
+                  f"{self.compile_time:.2f}s (compilation) + {self.bench_time:.2f}s (benchmarking); "
+                  f"best config selected: {self.best_config};")
         if config.pre_hook is not None:
             config.pre_hook({**self.nargs, **kwargs, **config.all_kwargs()})
         ret = self.fn.run(

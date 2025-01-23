@@ -436,9 +436,10 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     auto cacheMod = op.getCache();
     const int numVecs = elemsPerThread / vec;
     auto moduleOp = op->getParentOfType<ModuleOp>();
-    Value rDataMask = getRedundantDataMask(moduleOp, valueTy, rewriter, loc,
-                                           vecStart, targetInfo);
+
     for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
+      Value rDataMask = getRedundantDataMask(moduleOp, valueTy, rewriter, loc,
+                                             vecStart, targetInfo);
       Value pred = mask ? and_(maskElems[vecStart], rDataMask) : rDataMask;
       auto vecTy = LLVM::getFixedVectorType(valueElemTy, vec);
 
@@ -515,9 +516,10 @@ struct BufferStoreOpConversion
     auto moduleOp = op->getParentOfType<ModuleOp>();
 
     Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
-    Value rDataMask = getRedundantDataMask(moduleOp, valueTy, rewriter, loc,
-                                           vecStart, targetInfo);
+
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
+      Value rDataMask = getRedundantDataMask(moduleOp, valueTy, rewriter, loc,
+                                             vecStart, targetInfo);
       Type vecTy = LLVM::getFixedVectorType(valueElemTy, vec);
       Value pred = mask ? and_(maskElems[vecStart], rDataMask) : rDataMask;
       // Create the store val
@@ -596,13 +598,13 @@ struct AtomicCASOpConversion
     }
 
     auto moduleOp = op->getParentOfType<ModuleOp>();
-    Value mask = getRedundantDataMask(moduleOp, valueTy, rewriter, loc,
-                                      vecStart, targetInfo);
     auto vecTy = vec_ty(valueElemTy, vec);
     SmallVector<Value> resultVals(elemsPerThread);
 
     // atomic ops
     for (size_t i = 0; i < elemsPerThread; i += vec) {
+      Value mask =
+          getRedundantDataMask(moduleOp, valueTy, rewriter, loc, i, targetInfo);
       Value casVal = undef(vecTy);
       for (int ii = 0; ii < vec; ++ii) {
         Value iiVal = createIndexAttrConstant(
